@@ -1101,7 +1101,7 @@ abstract class AbstractChannelHandlerContext extends DefaultAttributeMap
         }
     }
 
-    static final class WriteTask extends AbstractWriteTask implements SingleThreadEventLoop.NonWakeupRunnable {
+    static final class WriteTask extends AbstractWriteTask implements Runnable {
 
         private static final Recycler<WriteTask> RECYCLER = new Recycler<WriteTask>() {
             @Override
