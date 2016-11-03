@@ -19,6 +19,7 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.channel.Channel;
@@ -41,6 +42,7 @@ import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
 import io.netty.util.internal.EmptyArrays;
 import org.junit.After;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
@@ -914,5 +916,87 @@ public abstract class SSLEngineTest {
                 .connect(serverChannel.localAddress()).syncUninterruptibly().channel();
 
         promise.syncUninterruptibly();
+    }
+
+    @Test
+    public void testUnwrapBehavior() throws Exception {
+        SelfSignedCertificate cert = new SelfSignedCertificate();
+
+        SSLEngine client =
+                SslContextBuilder
+                        .forClient()
+                        .trustManager(cert.cert())
+                        .sslProvider(sslClientProvider())
+                        .build()
+                        .newEngine(PooledByteBufAllocator.DEFAULT);
+
+        SSLEngine server =
+                SslContextBuilder
+                        .forServer(cert.certificate(), cert.privateKey())
+                        .sslProvider(sslServerProvider())
+                        .build()
+                        .newEngine(PooledByteBufAllocator.DEFAULT);
+
+        ByteBuffer plainClientOut = ByteBuffer.allocate(20000);
+        ByteBuffer plainClientIn = ByteBuffer.allocate(20000);
+        ByteBuffer encryptedClientToServer = ByteBuffer.allocate(20000);
+        ByteBuffer encryptedServerToClient = ByteBuffer.allocate(20000);
+        ByteBuffer plainServerIn = ByteBuffer.allocate(20000);
+
+        handshake(client, server);
+
+        // create two TLS frames
+
+        // first frame
+        plainClientOut.put("Hello".getBytes());
+        plainClientOut.flip();
+
+        SSLEngineResult result = client.wrap(plainClientOut, encryptedClientToServer);
+        Assert.assertEquals(SSLEngineResult.Status.OK, result.getStatus());
+        Assert.assertEquals(5, result.bytesConsumed());
+        Assert.assertTrue(result.bytesProduced() > 0);
+
+        Assert.assertFalse(plainClientOut.hasRemaining());
+        int produced = result.bytesProduced();
+        Assert.assertTrue(produced > 0);
+
+        // second frame
+        plainClientOut.clear();
+        plainClientOut.put(" World".getBytes());
+        plainClientOut.flip();
+
+        result = client.wrap(plainClientOut, encryptedClientToServer);
+        Assert.assertEquals(SSLEngineResult.Status.OK, result.getStatus());
+        Assert.assertEquals(6, result.bytesConsumed());
+        Assert.assertTrue(result.bytesProduced() > 0);
+
+        // send over to server
+        encryptedClientToServer.flip();
+
+
+        // try with too small output buffer first (to check BUFFER_OVERFLOW case)
+        /*
+        int remaining = encryptedClientToServer.remaining();
+        ByteBuffer small = ByteBuffer.allocate(3);
+        result = server.unwrap(encryptedClientToServer, small);
+        Assert.assertEquals(SSLEngineResult.Status.BUFFER_OVERFLOW, result.getStatus());
+        Assert.assertEquals(remaining, encryptedClientToServer.remaining());
+        */
+
+        // now with big enough buffer
+        result = server.unwrap(encryptedClientToServer, plainServerIn);
+        Assert.assertEquals(SSLEngineResult.Status.OK, result.getStatus());
+
+        Assert.assertEquals(5, result.bytesProduced());
+        Assert.assertTrue(encryptedClientToServer.hasRemaining()); // will fail for openssl server
+
+        result = server.unwrap(encryptedClientToServer, plainServerIn);
+        Assert.assertEquals(SSLEngineResult.Status.OK, result.getStatus());
+        Assert.assertEquals(6, result.bytesProduced());
+        Assert.assertFalse(encryptedClientToServer.hasRemaining());
+
+        plainServerIn.flip();
+        String data = new String(plainServerIn.array(), 0, plainServerIn.remaining());
+        Assert.assertEquals("Hello World", data);
     }
 }
