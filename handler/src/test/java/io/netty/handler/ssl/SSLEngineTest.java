@@ -19,6 +19,7 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.channel.Channel;
@@ -41,6 +42,7 @@ import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
 import io.netty.util.internal.EmptyArrays;
 import org.junit.After;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
@@ -914,5 +916,38 @@ public abstract class SSLEngineTest {
                 .connect(serverChannel.localAddress()).syncUninterruptibly().channel();
 
         promise.syncUninterruptibly();
+    }
+
+    @Test
+    public void testPacketBufferSizeLimit() throws Exception {
+        SelfSignedCertificate cert = new SelfSignedCertificate();
+
+        SSLEngine client =
+                SslContextBuilder
+                        .forClient()
+                        .trustManager(cert.cert())
+                        .sslProvider(sslClientProvider())
+                        .build()
+                        .newEngine(PooledByteBufAllocator.DEFAULT);
+
+        SSLEngine server =
+                SslContextBuilder
+                        .forServer(cert.certificate(), cert.privateKey())
+                        .sslProvider(sslServerProvider())
+                        .build()
+                        .newEngine(PooledByteBufAllocator.DEFAULT);
+
+        ByteBuffer plainServerOut = ByteBuffer.allocate(18656); // seems to work with one less, 18655
+        int bufferSize = server.getSession().getPacketBufferSize();
+        System.out.println(bufferSize);
+        ByteBuffer encryptedServerToClient = ByteBuffer.allocate(bufferSize);
+
+        handshake(client, server);
+
+        plainServerOut.position(plainServerOut.capacity()); // "fill" buffer
+        plainServerOut.flip();
+
+        SSLEngineResult result = server.wrap(plainServerOut, encryptedServerToClient);
+        Assert.assertEquals(SSLEngineResult.Status.OK, result.getStatus()); // will return BUFFER_OVERFLOW with openssl
     }
 }
